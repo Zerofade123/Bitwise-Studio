@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="theme-color" content="#0b1220">
+		<title>Bitwise Studio — Demo (Standalone)</title>
+		<link rel="stylesheet" href="style.css">
+		<link rel="manifest" href="/manifest.json">
+		<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&family=Space+Mono&display=swap" rel="stylesheet">
+
+		<!-- Analytics (replace YOUR_DOMAIN_HERE with your domain) -->
+		<!-- Plausible: privacy-friendly, no backend required -->
+		<script defer data-domain="YOUR_DOMAIN_HERE" src="https://plausible.io/js/plausible.js"></script>
+		<!-- If you prefer Google Analytics (GA4), replace with your Measurement ID and uncomment the snippet below -->
+		<!--
+		<script async src="https://www.googletagmanager.com/gtag/js?id=G-XXXXXXX"></script>
+		<script>
+		  window.dataLayer = window.dataLayer || [];
+		  function gtag(){dataLayer.push(arguments)}
+		  gtag('js', new Date());
+		  gtag('config', 'G-XXXXXXX');
+		</script>
+		-->
+		<!-- React and ReactDOM UMD builds -->
+		<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+		<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+		<!-- Babel to transform JSX in-browser for the demo -->
+		<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+	</head>
+	<body>
+		<div id="root"></div>
+
+		<script type="text/babel">
+			const { useState, useEffect } = React
+
+			function decimalToBinarySteps(n) {
+				if (n === 0) return ['0']
+				const steps = []
+				let x = Math.abs(n)
+				while (x > 0) {
+					steps.push(`${x} ÷ 2 = ${Math.floor(x / 2)} remainder ${x % 2}`)
+					x = Math.floor(x / 2)
+				}
+				return steps
+			}
+
+			function binaryToDecimalSteps(s) {
+				const clean = s.replace(/[^01]/g, '')
+				if (clean === '') return []
+				const bits = clean.split('').reverse()
+				const steps = bits.map((b, i) => `${b} × 2^${i} = ${b * Math.pow(2, i)}`)
+				const value = bits.reduce((acc, b, i) => acc + b * Math.pow(2, i), 0)
+				steps.push(`Sum = ${value}`)
+				return steps
+			}
+
+			function Converter({mode}){
+				const [input, setInput] = useState('')
+				const [detected, setDetected] = useState('') // 'dec' | 'bin' | 'hex' | ''
+				const [values, setValues] = useState({dec:'',bin:'',hex:'',oct:''})
+				const [error, setError] = useState('')
+				const [copied, setCopied] = useState('')
+				const [localExplain, setLocalExplain] = useState(mode === 'Explain')
+				const [steps, setSteps] = useState([])
+				const [aiExplain, setAiExplain] = useState('')
+				const [aiLoading, setAiLoading] = useState(false)
+
+				useEffect(() => setLocalExplain(mode === 'Explain'), [mode])
+
+				useEffect(() => {
+					if (input === ''){ setDetected(''); setValues({dec:'',bin:'',hex:'',oct:''}); setError(''); setSteps([]); return }
+
+					const s = input.trim()
+
+					const isBin = /^[-]?([01]+)$/.test(s)
+					const isHex = /^(-)?0x[0-9a-fA-F]+$/.test(s) || /^[-]?[0-9a-fA-F]+h$/i.test(s) || /[a-fA-F]/.test(s)
+					const isDec = /^-?\d+$/.test(s)
+
+					let n = null
+					try{
+						if (isBin){ n = parseInt(s.replace('-', ''), 2) * (s.startsWith('-')? -1:1); setDetected('bin') }
+						else if (isHex){ const cleaned = s.replace(/^0x/i,'').replace(/h$/i,''); n = parseInt(cleaned.replace('-',''),16) * (s.startsWith('-')? -1:1); setDetected('hex') }
+						else if (isDec){ n = parseInt(s,10); setDetected('dec') }
+						else { /* fallback: try parse as dec */ if (!Number.isNaN(Number(s))){ n = Number(s); setDetected('dec') } }
+					}catch(e){ n = null }
+
+					if (n === null || Number.isNaN(n)){
+						setError('Invalid input for recognized formats (binary, decimal, hex).')
+						setValues({dec:'',bin:'',hex:'',oct:''})
+						setSteps([])
+						return
+					}
+
+					setError('')
+					setAiExplain('')
+					const u = n >>> 0
+					setValues({
+						dec: String(n),
+						bin: (n<0? '-' : '') + (Math.abs(n).toString(2)),
+						hex: (n<0? '-' : '') + Math.abs(n).toString(16).toUpperCase(),
+						oct: (n<0? '-' : '') + Math.abs(n).toString(8)
+					})
+
+					// compute procedural steps for the local explain mode
+					if (localExplain){
+						if (isBin) setSteps(binaryToDecimalSteps(s))
+						else setSteps(decimalToBinarySteps(n))
+					} else {
+						setSteps([])
+					}
+				}, [input, localExplain])
+
+				const copy = async (text, key) => {
+					try{ await navigator.clipboard.writeText(text); setCopied(key); setTimeout(()=>setCopied(''),1200) }catch(e){ setCopied('') }
+				}
+
+				const autoDetectLabel = detected === 'bin' ? 'Binary' : detected === 'hex' ? 'Hex' : detected === 'dec' ? 'Decimal' : 'Input'
+
+				function generateLocalAIExplanation(){
+					if (!values.dec && !input) return ''
+					const n = Number(values.dec || 0)
+					const head = `Explanation for ${input} (${autoDetectLabel}):`;
+					const s = localExplain && steps.length ? steps.join(' \n') : ''
+					const tip = detected === 'bin' ? `You can translate each bit by its power-of-two place value.` : `Divide by 2 repeatedly to extract remainders for binary.`
+					return `${head}\n\n${s}\n\n${tip}`
+				}
+
+				const handleAiExplain = () => {
+					setAiLoading(true)
+					setAiExplain('')
+					setTimeout(() => {
+						setAiExplain(generateLocalAIExplanation())
+						setAiLoading(false)
+					}, 600)
+				}
+
+				return (
+					<section className="converter">
+						<div className="panel">
+							<div className="panel-row">
+								<label>Input</label>
+								<input className={`io-input ${error? 'error':''}`} placeholder={`Enter decimal, binary (1010) or hex (0x2A)`} value={input} onChange={e=>setInput(e.target.value)} />
+								<div className="input-meta">{autoDetectLabel}</div>
+							</div>
+							<div className="panel-row" style={{justifyContent:'flex-end'}}>
+								<label style={{width:'auto',color:'var(--muted)'}}>Explain</label>
+								<input type="checkbox" checked={localExplain} onChange={e=>setLocalExplain(e.target.checked)} />
+								<button style={{marginLeft:8}} onClick={handleAiExplain} title="Generate mock AI explanation">AI Explain (local)</button>
+							</div>
+							{error && <div className="input-error">{error}</div>}
+						</div>
+
+						<div className="result-cards">
+							{['bin','dec','hex','oct'].map(k=>{
+								const label = k==='bin'? 'Binary' : k==='dec'? 'Decimal' : k==='hex'? 'Hex' : 'Octal'
+								const val = values[k]
+								const bitlen = k==='bin' && val? val.replace('-','').length : ''
+								return (
+									<div className="result-card" key={k}>
+										<div className="rc-head">
+											<div className="rc-label">{label}</div>
+											<div className="rc-actions">
+												{bitlen && <span className="bitlen">{bitlen} bits</span>}
+												<button className="copy-btn" title="Copy" onClick={()=>copy(val,k)}>{copied===k? '✔':'Copy'}</button>
+											</div>
+										</div>
+										<div className="rc-value">{val || '—'}</div>
+									</div>
+								)
+							})}
+						</div>
+
+						{(localExplain && steps.length > 0) && (
+							<div className="explain" style={{marginTop:12}}>
+								<h4>Steps</h4>
+								<ol>
+									{steps.map((s,i)=>(<li key={i}>{s}</li>))}
+								</ol>
+							</div>
+						)}
+
+						{aiLoading && <div className="explain" style={{marginTop:12}}>Generating explanation…</div>}
+						{aiExplain && (
+							<div className="explain" style={{marginTop:12}}>
+								<h4>Mock AI Explanation <small className="muted">(local)</small></h4>
+								<pre style={{whiteSpace:'pre-wrap'}}>{aiExplain}</pre>
+							</div>
+						)}
+
+						<div className={`toast ${copied? 'show':''}`}>Copied</div>
+					</section>
+				)
+			}
+
+			function BitwisePlayground() {
+				const [bits, setBits] = React.useState(8)
+				const [a, setA] = React.useState(0)
+				const [b, setB] = React.useState(0)
+				const [op, setOp] = React.useState('AND')
+
+				const mask = (bits === 32) ? 0xFFFFFFFF : ((1 << bits) - 1)
+
+				const toBits = (n) => {
+					const arr = []
+					for (let i = bits - 1; i >= 0; i--) arr.push((n >> i) & 1)
+					return arr
+				}
+
+				const toggleBit = (which, idx) => {
+					const bit = 1 << idx
+					if (which === 'A') setA(prev => (prev ^ bit) & mask)
+					else setB(prev => (prev ^ bit) & mask)
+				}
+
+				const compute = () => {
+					let r = 0
+					if (op === 'AND') r = a & b
+					if (op === 'OR') r = a | b
+					if (op === 'XOR') r = a ^ b
+					if (op === 'NOTA') r = (~a) & mask
+					if (op === 'NOTB') r = (~b) & mask
+					if (op === 'A<<1') r = (a << 1) & mask
+					if (op === 'A>>1') r = (a >>> 1) & mask
+					return r >>> 0
+				}
+
+				const result = compute()
+
+				return (
+					<div className="panel">
+						<div className="panel-row">
+							<label>Bits:</label>
+							<select value={bits} onChange={e => setBits(Number(e.target.value))}>
+								<option value={8}>8</option>
+								<option value={16}>16</option>
+								<option value={32}>32</option>
+							</select>
+							<label>A:</label>
+							<input value={a} onChange={e => setA(Number(e.target.value) || 0)} />
+							<label>B:</label>
+							<input value={b} onChange={e => setB(Number(e.target.value) || 0)} />
+						</div>
+
+						<div className="ops">
+							<button onClick={() => setOp('AND')}>AND</button>
+							<button onClick={() => setOp('OR')}>OR</button>
+							<button onClick={() => setOp('XOR')}>XOR</button>
+							<button onClick={() => setOp('NOTA')}>NOT A</button>
+							<button onClick={() => setOp('NOTB')}>NOT B</button>
+							<button onClick={() => setOp('A<<1')}>A &lt;&lt; 1</button>
+							<button onClick={() => setOp('A>>1')}>A &gt;&gt; 1</button>
+						</div>
+
+						<div className="bits-grid">
+							<div className="bits-row">
+								<div className="bits-label">A</div>
+								{toBits(a).map((bit, i) => (
+									<div key={i} className={`bit ${bit ? 'on' : ''}`} onClick={() => toggleBit('A', bits - 1 - i)}>{bit}</div>
+								))}
+							</div>
+							<div className="bits-row">
+								<div className="bits-label">B</div>
+								{toBits(b).map((bit, i) => (
+									<div key={i} className={`bit ${bit ? 'on' : ''}`} onClick={() => toggleBit('B', bits - 1 - i)}>{bit}</div>
+								))}
+							</div>
+							<div className="bits-row result-row">
+								<div className="bits-label">R ({op})</div>
+								{toBits(result).map((bit, i) => (
+									<div key={i} className={`bit ${bit ? 'on' : ''}`}>{bit}</div>
+								))}
+							</div>
+						</div>
+
+						<div className="panel-row">
+							<div>Result decimal: <strong>{result}</strong></div>
+							<div>Hex: <strong>{result.toString(16).toUpperCase()}</strong></div>
+							<div>Binary: <strong>{result.toString(2)}</strong></div>
+						</div>
+					</div>
+				)
+			}
+
+			function FloatExplorer() {
+				const [value, setValue] = React.useState('0')
+				const [bits32, setBits32] = React.useState('00000000000000000000000000000000')
+
+				useEffect(() => {
+					// compute IEEE-754 float32 representation
+					try {
+						const f = parseFloat(value)
+						const buf = new ArrayBuffer(4)
+						const dv = new DataView(buf)
+						dv.setFloat32(0, f)
+						const v = dv.getUint32(0)
+						const s = v.toString(2).padStart(32, '0')
+						setBits32(s)
+					} catch {
+						setBits32('')
+					}
+				}, [value])
+
+				const sign = bits32[0]
+				const exp = bits32.slice(1, 9)
+				const mant = bits32.slice(9)
+
+				return (
+					<div className="panel">
+						<div className="panel-row">
+							<label>Float value:</label>
+							<input value={value} onChange={e => setValue(e.target.value)} />
+						</div>
+						<div className="float-breakdown">
+							<div><strong>Sign:</strong> {sign}</div>
+							<div><strong>Exponent (bits):</strong> {exp}</div>
+							<div><strong>Mantissa (bits):</strong> {mant}</div>
+						</div>
+						<div className="explain">
+							<h3>IEEE-754 (float32)</h3>
+							<p>Binary: <code>{bits32}</code></p>
+							<p>Sign: {sign} — Exponent: {parseInt(exp || '0', 2)} — Mantissa: {mant}</p>
+						</div>
+					</div>
+				)
+			}
+
+			function AsciiTable() {
+				const [q, setQ] = React.useState('')
+				const rows = []
+				for (let i = 0; i < 128; i++) {
+					const ch = String.fromCharCode(i)
+					rows.push({code:i, char: ch, hex: i.toString(16).toUpperCase(), bin: i.toString(2).padStart(8,'0')})
+				}
+				const filtered = rows.filter(r => r.code.toString().includes(q) || r.hex.includes(q.toUpperCase()) || r.char.includes(q))
+				return (
+					<div className="panel">
+						<div className="panel-row">
+							<label>Search (char / dec / hex):</label>
+							<input value={q} onChange={e => setQ(e.target.value)} />
+						</div>
+						<div className="ascii-table">
+							<table>
+								<thead><tr><th>Dec</th><th>Hex</th><th>Char</th><th>Binary</th></tr></thead>
+								<tbody>
+									{filtered.map(r => (
+										<tr key={r.code}><td>{r.code}</td><td>{r.hex}</td><td>{r.char}</td><td>{r.bin}</td></tr>
+									))}
+								</tbody>
+							</table>
+						</div>
+					</div>
+				)
+			}
+
+			function Sidebar({tab,setTab,collapsed,setCollapsed}){
+				const items = [
+					'Converter','Playground','Float','ASCII','Number Systems','Binary Tools','Logic Gates','Networking','Practice'
+				]
+				return (
+					<aside className={`sidebar ${collapsed? 'collapsed':''}`} aria-label="Primary navigation">
+						<div className="brand">
+							<div className="logo">BS</div>
+							<div className="brand-name">Bitwise Studio</div>
+						</div>
+						<nav className="nav-list">
+							{items.map(i => (
+								<button key={i} className={i===tab? 'nav-item active':'nav-item'} onClick={() => setTab(i)}>{i}</button>
+							))}
+						</nav>
+						<div className="sidebar-foot">
+							<button className="collapse" onClick={() => setCollapsed(!collapsed)}>{collapsed? 'Expand':'Collapse'}</button>
+						</div>
+					</aside>
+				)
+			}
+
+			function Topbar({tab,mode,setMode,theme,setTheme}){
+				return (
+					<div className="topbar" role="banner">
+						<div className="tool-title">{tab}</div>
+						<div className="top-controls">
+							<div className="mode-toggle" role="tablist">
+								<button className={mode==='Quick'?'active':''} onClick={() => setMode('Quick')}>Quick</button>
+								<button className={mode==='Explain'?'active':''} onClick={() => setMode('Explain')}>Explain</button>
+							</div>
+							<button className="theme-toggle" onClick={() => setTheme(theme==='dark'?'light':'dark')}>{theme==='dark'?'Light':'Dark'}</button>
+						</div>
+					</div>
+				)
+			}
+
+			function App(){
+				const [tab, setTab] = React.useState('Converter')
+				const [collapsed, setCollapsed] = React.useState(false)
+				const [mode, setMode] = React.useState('Quick')
+				const [theme, setTheme] = React.useState('dark')
+
+				return (
+					<div className={`shell ${theme}`}>
+						<Sidebar tab={tab} setTab={setTab} collapsed={collapsed} setCollapsed={setCollapsed} />
+
+						<section className="workspace">
+							<Topbar tab={tab} mode={mode} setMode={setMode} theme={theme} setTheme={setTheme} />
+
+							<div className="content card">
+								{tab === 'Converter' && <Converter />}
+								{tab === 'Playground' && <BitwisePlayground />}
+								{tab === 'Float' && <FloatExplorer />}
+								{tab === 'ASCII' && <AsciiTable />}
+								{['Number Systems','Binary Tools','Logic Gates','Networking','Practice'].includes(tab) && (
+									<div className="panel"><h3>{tab}</h3><p className="muted">Tool UI coming soon.</p></div>
+								)}
+							</div>
+						</section>
+
+						<aside className="utility card" aria-label="Utility panel">
+							<h4>Inspector</h4>
+							<p className="muted">Contextual info and quick tips appear here.</p>
+						</aside>
+					</div>
+				)
+			}
+
+			const root = ReactDOM.createRoot(document.getElementById('root'))
+			root.render(<App />)
+		</script>
+
+			<!-- Service worker registration for PWA installability -->
+			<script>
+			if ('serviceWorker' in navigator) {
+				window.addEventListener('load', () => {
+					navigator.serviceWorker.register('/service-worker.js').catch(err => {
+						console.warn('SW registration failed:', err)
+					})
+				})
+			}
+			</script>
+	</body>
+</html>
